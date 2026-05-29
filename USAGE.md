@@ -1,7 +1,8 @@
 # MoE Competition Simulator
 
-This repository contains only the simulator code for the MoE dynamic load-balancing competition.
-Trace files and generated outputs are intentionally excluded.
+This repository contains the simulator code for the MoE dynamic load-balancing competition.
+It includes `LmSys.npy` sample traces for `DS-R1` and `Qwen3`; larger traces and generated
+outputs remain excluded.
 
 ## Install
 
@@ -9,21 +10,28 @@ Trace files and generated outputs are intentionally excluded.
 python -m pip install -r requirements.txt
 ```
 
-## Expected Trace Layout
+## Trace Layout
 
-Place traces outside git using the same layout as the original simulator:
+The committed sample traces use this layout:
 
 ```text
 trace/
   DS-R1/
-    ShareGPT.npy
-    WildChat.npy
     LmSys.npy
-    Mix.npy
   Qwen3/
-    ShareGPT.npy
-    WildChat.npy
     LmSys.npy
+```
+
+Additional local traces can use the same directory structure, but they are ignored by git.
+
+## Reference Submissions
+
+The `submissions/` directory contains participant-style examples:
+
+```text
+submissions/
+  smoke/submission.py
+  hot_expert_baseline/submission.py
 ```
 
 ## Run

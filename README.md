@@ -1,8 +1,41 @@
-1. This simulator is used to evaluate the performance of dynamic load balancing algorithms for MoE LLMs under the EP paradigm.
-    1) Two baselines are provided: a) Default: disables load balancing features; b) DS-EPLB: the load balancing algorithm open-sourced by DeepSeek;
-    2) Four hotness datasets are considered, all collected from real-world scenarios: a) ShareGPT; b) WildChat; c) LmSys; d) A mixture of three datasets (Gsm8k + BoolQ + HumanEval);
-    3) Two metrics are evaluated: a) PAR: the Peak-Average Ratio of inter-device loads, where per-device load is defined as the summed hotness of experts on the device; b) Expert transmission amounts: indicating the D2D transmission cost of expert weights for redeployment;
-    4) EP sizes of 32, 64, 128, and 256 are evaluated;
-    5) The focus is on the decoding phase.
-2. The proposed algorithm should achieve a better PAR than DS-EPLB, while achieving equal or lower transmission amounts than DS-EPLB.
-3. The simulator is executed by running dynamic_lb_simulator.py, and the proposed algorithm should be added at positions marked #TODO.
+# MoE Competition Simulator
+
+This repository contains the simulator code for the MoE dynamic load-balancing competition.
+It includes one small sample trace for each supported model so local smoke tests can run
+without the full private trace set.
+
+## Included Sample Traces
+
+```text
+trace/
+  DS-R1/
+    LmSys.npy
+  Qwen3/
+    LmSys.npy
+```
+
+The full trace set is intentionally not committed. Generated outputs and additional local traces
+remain ignored by git.
+
+## Reference Submissions
+
+Participant-style reference implementations are available under `submissions/`:
+
+- `submissions/smoke/submission.py`: minimal no-redeployment API smoke test.
+- `submissions/hot_expert_baseline/submission.py`: simple baseline that assigns redundant slots
+  to the hottest experts in each layer.
+
+## Install
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+## Run
+
+```bash
+python dynamic_lb_simulator.py
+```
+
+The default script evaluates the bundled experiment grid when the corresponding traces are
+available.

@@ -11,12 +11,17 @@ env/
 .vscode/
 .DS_Store
 
-trace/
+*.npy
+*.npz
+trace/**
 traces/
 output/
 outputs/
-*.npy
-*.npz
+!trace/
+!trace/DS-R1/
+!trace/DS-R1/LmSys.npy
+!trace/Qwen3/
+!trace/Qwen3/LmSys.npy
 *.png
 *.jpg
 *.jpeg
