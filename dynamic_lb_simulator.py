@@ -9,6 +9,18 @@ import os
 
 mp.set_start_method("spawn", force=True)
 
+BALANCED_COMPUTE_SECONDS = 60.0
+EXPERT_BYTES = 88_080_384
+TRANSFER_BANDWIDTH_BYTES_PER_SECOND = 900_000_000_000
+
+
+def transmission_time_seconds(transmit_amount):
+    return transmit_amount * EXPERT_BYTES / TRANSFER_BANDWIDTH_BYTES_PER_SECOND
+
+
+def modeled_runtime_seconds(mean_par, transmit_amount):
+    return BALANCED_COMPUTE_SECONDS * mean_par + transmission_time_seconds(transmit_amount)
+
 
 class Configure(object):
     def __init__(self, dataset, model, n_red_experts, n_devices, n_nodes, n_layers, n_experts, collection_interval,
@@ -218,8 +230,25 @@ def run(cfg: Configure):
         # print(f'{np.array(results[i].values())=}')
         par_per_method[algo_type] = results[i][0]
         transmit_amount_per_method[algo_type] = results[i][1]
+    baseline_algo = 'DS-EPLB' if 'DS-EPLB' in par_per_method else cfg.algo_set[0]
+    baseline_time = modeled_runtime_seconds(
+        par_per_method[baseline_algo],
+        transmit_amount_per_method[baseline_algo],
+    )
+
+    for algo_type in cfg.algo_set:
+        mean_par = par_per_method[algo_type]
+        transmit_amount = transmit_amount_per_method[algo_type]
+        transmission_time = transmission_time_seconds(transmit_amount)
+        total_time = modeled_runtime_seconds(mean_par, transmit_amount)
+        score = 100.0 * baseline_time / total_time
         print(
-            f'{cfg.dataset} {cfg.model} EP{cfg.n_devices} {algo_type} PAR: {par_per_method[algo_type]} transmit_amount: {transmit_amount_per_method[algo_type]}')
+            f'{cfg.dataset} {cfg.model} EP{cfg.n_devices} {algo_type} '
+            f'PAR: {mean_par} '
+            f'total_transit: {transmit_amount} '
+            f'transmission_time_seconds: {transmission_time} '
+            f'total_time_seconds: {total_time} '
+            f'score: {score}')
     if cfg.figure_flag:
         case_name = f'{cfg.dataset}_{cfg.model}_EP{cfg.n_devices}'
         figure_dir = os.path.join(cfg.output_dir, 'figure')

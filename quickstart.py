@@ -17,6 +17,10 @@ MODEL_SHAPES = {
     "Qwen3": (94, 128),
 }
 
+BALANCED_COMPUTE_SECONDS = 60.0
+EXPERT_BYTES = 88_080_384
+TRANSFER_BANDWIDTH_BYTES_PER_SECOND = 900_000_000_000
+
 
 def init_deploy_table(
     n_devices: int, n_experts: int, n_red_experts: int, default: bool
@@ -57,6 +61,16 @@ def cal_par_per_iter(cur_hotness: np.ndarray, cur_deploy_table: np.ndarray) -> n
 
 def compute_redeploy_cost(old: np.ndarray, new: np.ndarray) -> int:
     return int(np.sum(old != new))
+
+
+def transmission_time_seconds(transmit_amount: int | float) -> float:
+    return transmit_amount * EXPERT_BYTES / TRANSFER_BANDWIDTH_BYTES_PER_SECOND
+
+
+def modeled_runtime_seconds(mean_par: float, transmit_amount: int | float) -> float:
+    return BALANCED_COMPUTE_SECONDS * mean_par + transmission_time_seconds(
+        transmit_amount
+    )
 
 
 def load_trace(repo_root: Path, model: str, dataset: str, max_iters: int) -> np.ndarray:
@@ -155,7 +169,7 @@ def run_case(
     ds_par, ds_transmit, ds_runtime = run_ds_eplb(
         hotness, ep, n_layers, n_experts, collection_interval
     )
-    return [
+    rows = [
         {
             "model": model,
             "dataset": dataset,
@@ -177,6 +191,16 @@ def run_case(
             "runtime_seconds": ds_runtime,
         },
     ]
+    baseline_total_time = modeled_runtime_seconds(ds_par, ds_transmit)
+    for row in rows:
+        row["transmission_time_seconds"] = transmission_time_seconds(
+            row["transmit_amount"]
+        )
+        row["total_time_seconds"] = modeled_runtime_seconds(
+            row["mean_par"], row["transmit_amount"]
+        )
+        row["score"] = 100.0 * baseline_total_time / row["total_time_seconds"]
+    return rows
 
 
 def print_rows(rows: list[dict[str, object]]) -> None:
@@ -186,9 +210,10 @@ def print_rows(rows: list[dict[str, object]]) -> None:
         "ep",
         "method",
         "mean_par",
-        "transmit_amount",
-        "iterations",
-        "runtime_seconds",
+        "total_transit",
+        "transmission_time_seconds",
+        "total_time_seconds",
+        "score",
     ]
     widths = {header: len(header) for header in headers}
     rendered_rows = []
@@ -199,9 +224,10 @@ def print_rows(rows: list[dict[str, object]]) -> None:
             "ep": str(row["ep"]),
             "method": str(row["method"]),
             "mean_par": f"{row['mean_par']:.6f}",
-            "transmit_amount": str(row["transmit_amount"]),
-            "iterations": str(row["iterations"]),
-            "runtime_seconds": f"{row['runtime_seconds']:.3f}",
+            "total_transit": str(row["transmit_amount"]),
+            "transmission_time_seconds": f"{row['transmission_time_seconds']:.6f}",
+            "total_time_seconds": f"{row['total_time_seconds']:.6f}",
+            "score": f"{row['score']:.6f}",
         }
         rendered_rows.append(rendered)
         for header, value in rendered.items():

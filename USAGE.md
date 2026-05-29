@@ -18,8 +18,8 @@ python quickstart.py
 ```
 
 The default quick-start run evaluates `Qwen3 / LmSys / EP32` with the committed sample trace and
-prints a small text table. Use `--model DS-R1` for the DS-R1 sample or `--all-samples` for both
-committed traces.
+prints PAR, total transit, estimated transmission time, estimated total time, and score. Use
+`--model DS-R1` for the DS-R1 sample or `--all-samples` for both committed traces.
 
 ## Trace Layout
 

@@ -41,7 +41,8 @@ python quickstart.py
 ```
 
 This runs a bounded `Qwen3 / LmSys / EP32` sample using the committed traces and prints PAR,
-transmit amount, iteration count, and runtime for `Default` and `DS-EPLB`.
+total transit, estimated transmission time, estimated total time, and score for `Default` and
+`DS-EPLB`.
 
 To run both committed sample traces:
 
