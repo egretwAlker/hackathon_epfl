@@ -10,6 +10,17 @@ outputs remain excluded.
 python -m pip install -r requirements.txt
 ```
 
+## Quick Start
+
+```bash
+git lfs pull
+python quickstart.py
+```
+
+The default quick-start run evaluates `Qwen3 / LmSys / EP32` with the committed sample trace and
+prints a small text table. Use `--model DS-R1` for the DS-R1 sample or `--all-samples` for both
+committed traces.
+
 ## Trace Layout
 
 The committed sample traces use this layout:
@@ -40,4 +51,5 @@ submissions/
 python dynamic_lb_simulator.py
 ```
 
-The default script evaluates the bundled experiment grid when traces are available.
+The default script evaluates the full experiment grid when all corresponding traces are available.
+For the committed sample traces only, use `quickstart.py`.

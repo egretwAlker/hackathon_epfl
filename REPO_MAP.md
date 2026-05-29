@@ -7,6 +7,8 @@ experiment outputs for the MoE dynamic load-balancing competition.
 
 - `dynamic_lb_simulator.py`: original simulator entry point. It loads traces, runs placement
   algorithms, computes PAR, counts redeployment transmit amount, and optionally stores raw output.
+- `quickstart.py`: fresh-clone smoke runner for the committed `LmSys.npy` sample traces. It prints
+  text metrics for `Default` and `DS-EPLB` without writing generated outputs.
 - `README.md`: short project overview, install command, included sample traces, and reference
   submission list.
 - `USAGE.md`: local usage notes and trace/submission layout.

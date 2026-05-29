@@ -31,11 +31,29 @@ Participant-style reference implementations are available under `submissions/`:
 python -m pip install -r requirements.txt
 ```
 
+## Quick Start
+
+After cloning, pull the sample trace files from Git LFS and run the quick-start simulator:
+
+```bash
+git lfs pull
+python quickstart.py
+```
+
+This runs a bounded `Qwen3 / LmSys / EP32` sample using the committed traces and prints PAR,
+transmit amount, iteration count, and runtime for `Default` and `DS-EPLB`.
+
+To run both committed sample traces:
+
+```bash
+python quickstart.py --all-samples
+```
+
 ## Run
 
 ```bash
 python dynamic_lb_simulator.py
 ```
 
-The default script evaluates the bundled experiment grid when the corresponding traces are
-available.
+The default script evaluates the full experiment grid and expects the corresponding full trace set
+to be available locally. Use `quickstart.py` for a fresh-clone smoke test.
