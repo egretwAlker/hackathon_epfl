@@ -1,0 +1,47 @@
+{
+  "_comment": "Local-search builder (build_incremental). Stages: w_ema (EMA mean) + build_incremental (hill-climbs from current placement) + select_top_k_par_gain (migrate only positive-gain layers, sorted by descending predicted PAR-gain). The deepseek baseline is included as a reference row.",
+
+  "estimate_w_fn":       "w_ema",
+  "build_deployment_fn": "build_incremental",
+  "select_layers_fn":    "select_top_k_par_gain",
+
+  "ema": {
+    "beta1":           0.999,
+    "beta2":           0.9999,
+    "track_corr":      false,
+    "beta_corr":       0.999,
+    "bias_correction": true
+  },
+
+  "estimator_params": {
+    "lam":        [0.0, 16.0, 32.0, 48.0],
+    "std_source": ["ema", "window"]
+  },
+
+  "builder_params": {
+    "max_moves_per_layer": [20, 40],
+    "min_par_gain_B":      [0.0],
+    "min_par_gain_A":      [0.0],
+    "score_aware":         [true],
+    "assumed_cycle_iters": [1024],
+    "assumed_total_iters": [10000],
+    "use_dseplb_init":     [true],
+    "max_cold_tries":      [16]
+  },
+
+  "selector_params": {
+    "k":         ["all"],
+    "threshold": [0.0]
+  },
+
+  "models":              ["DS-R1", "Qwen3"],
+  "eps":                 [32, 64, 128, 256],
+  "max_iters":           1000000,
+  "collection_interval": 1024,
+
+  "include_deepseek":    true,
+  "include_strategies":  [],
+
+  "out": "experiments/results/my_sub/incremental_grid.csv",
+  "top": 10
+}

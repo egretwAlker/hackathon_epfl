@@ -33,8 +33,8 @@ STRATEGIES_DIR = HERE / "strategies"
 # the universe of options without importing submission.
 ALLOWED_FNS = {
     "w_sum", "w_ema",
-    "build_dseplb",
-    "select_all", "select_top_k_par_gain",
+    "build_dseplb", "build_incremental",
+    "select_all", "select_top_k_par_gain", "select_changed_layers",
 }
 
 
@@ -90,6 +90,7 @@ def build_strategy(spec: Dict[str, Any], submission_module):
         estimate_w       = make(spec["estimate_w"]),
         build_deployment = make(spec["build_deployment"]),
         select_layers    = make(spec["select_layers"]),
+        initial_layout   = spec.get("initial_layout", "round_robin"),
         name             = spec["name"],
     )
 
@@ -116,12 +117,14 @@ def codegen_strategy(spec: Dict[str, Any]) -> str:
     else:
         ema_code = "EmaConfig()"
 
+    initial_layout = spec.get("initial_layout", "round_robin")
     return (
         f"Strategy(\n"
         f"    ema              = {ema_code},\n"
         f"    estimate_w       = {make_code(spec['estimate_w'])},\n"
         f"    build_deployment = {make_code(spec['build_deployment'])},\n"
         f"    select_layers    = {make_code(spec['select_layers'])},\n"
+        f"    initial_layout   = {initial_layout!r},\n"
         f"    name             = {spec['name']!r},\n"
         f")"
     )

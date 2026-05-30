@@ -1,0 +1,10 @@
+{
+  "_comment": "Local-search builder: w_ema + build_incremental + select_changed_layers. Starts from DS-EPLB on call 1 (shadow=None -> fallback) and hill-climbs from the live placement thereafter. Only layers actually changed are migrated (zero blackout for layers at local optimum).",
+
+  "ema":              { "beta1": 0.999, "beta2": 0.9999 },
+  "estimate_w":       { "fn": "w_ema",                  "params": { "lam": 0.0 } },
+  "build_deployment": { "fn": "build_incremental",      "params": { "max_moves_per_layer": 30,
+                                                                     "min_par_gain_B": 0.001,
+                                                                     "min_par_gain_A": 0.002 } },
+  "select_layers":    { "fn": "select_changed_layers" }
+}

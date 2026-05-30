@@ -52,16 +52,21 @@ def rewrite(src: str, spec: dict) -> str:
 
 
 def smoke_test(submission_path: Path, expected_name: str) -> None:
-    """Import the rewritten module in-process and run a tiny rebalance call."""
+    """Import the rewritten module the same way the Codabench evaluator does.
+
+    Critically: do NOT pre-register the module in sys.modules. The evaluator
+    calls spec.loader.exec_module(module) without registering it first
+    (/app/program/ingestion.py:80), which triggers a known dataclass bug
+    when `from __future__ import annotations` is used — sys.modules.get(
+    cls.__module__) returns None inside _is_type(). Mirror that loading
+    pattern here so we catch the issue locally instead of at upload time.
+    """
     spec = importlib.util.spec_from_file_location("_build_check", submission_path)
     if spec is None or spec.loader is None:
         raise SystemExit("ERROR: could not load module spec for smoke test")
     mod = importlib.util.module_from_spec(spec)
-    sys.modules["_build_check"] = mod
-    try:
-        spec.loader.exec_module(mod)
-    finally:
-        sys.modules.pop("_build_check", None)
+    # No sys.modules registration here — match the evaluator exactly.
+    spec.loader.exec_module(mod)
 
     got = mod.get_strategy().name
     if got != expected_name:
