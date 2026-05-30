@@ -1,0 +1,32 @@
+{
+  "_comment": "Grid search for the ema-default topology (w_ema + build_dseplb + select_all). Sweeps EMA decay rates (beta1, beta2) and the w-scoring variance weight (lam in w = mean + lam*std). lam can be negative (skeptical: deflate volatile experts) or positive (defensive: replicate volatile experts more). Matches the official eval case grid (DS-R1 EP32/64/128/256 + Qwen3 EP32/64/128); only the LmSys trace is locally available. Qwen3 EP256 is auto-skipped (D > E).",
+
+  "estimate_w_fn":       "w_ema",
+  "build_deployment_fn": "build_dseplb",
+  "select_layers_fn":    "select_all",
+
+  "ema": {
+    "beta1":           [0.99, 0.95, 0.9],
+    "beta2":           [0.99, 0.95, 0.9],
+    "track_corr":      false,
+    "beta_corr":       0.999,
+    "bias_correction": true
+  },
+
+  "estimator_params": {
+    "lam": [-1.0, -0.5, 0.0, 0.5, 1.0]
+  },
+
+  "selector_params": {},
+
+  "models":              ["DS-R1", "Qwen3"],
+  "eps":                 [32, 64, 128, 256],
+  "max_iters":           1000000,
+  "collection_interval": 1024,
+
+  "include_deepseek":    true,
+  "include_strategies":  [],
+
+  "out": "experiments/results/my_sub/ema_grid.csv",
+  "top": 10
+}

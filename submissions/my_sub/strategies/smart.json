@@ -1,0 +1,12 @@
+{
+  "_comment": "Adam EMA + correlation tracking + variance-aware (w = mean + lam*std) + top-K PAR-gain selector. lam=1 -> defensive (replicate volatile experts more); lam<0 -> skeptical.",
+  "ema": {
+    "beta1": 0.999,
+    "beta2": 0.9999,
+    "track_corr": true,
+    "beta_corr": 0.999
+  },
+  "estimate_w":       { "fn": "w_ema",                  "params": { "lam": 1.0 } },
+  "build_deployment": { "fn": "build_dseplb" },
+  "select_layers":    { "fn": "select_top_k_par_gain",  "params": { "k": 20, "threshold": 0.02 } }
+}

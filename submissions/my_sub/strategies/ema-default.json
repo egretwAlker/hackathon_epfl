@@ -1,0 +1,7 @@
+{
+  "_comment": "Adam EMA mean (no variance, no corr), plain DS-EPLB packing, all layers.",
+  "ema":              { "beta1": 0.999, "beta2": 0.9999 },
+  "estimate_w":       { "fn": "w_ema" },
+  "build_deployment": { "fn": "build_dseplb" },
+  "select_layers":    { "fn": "select_all" }
+}

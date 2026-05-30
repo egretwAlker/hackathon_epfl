@@ -1,0 +1,32 @@
+{
+  "_comment": "Sweep the DeepSeek topology (w_sum + build_dseplb + select_all) with a variance term on w. lam=0 reproduces pure DS-EPLB bit-for-bit; lam!=0 mixes in the framework's always-on EMA std. Lets us check whether adding variance to the window-sum estimator helps without changing the rest of the pipeline.",
+
+  "estimate_w_fn":       "w_sum",
+  "build_deployment_fn": "build_dseplb",
+  "select_layers_fn":    "select_all",
+
+  "ema": {
+    "beta1":           0.999,
+    "beta2":           0.9999,
+    "track_corr":      false,
+    "beta_corr":       0.999,
+    "bias_correction": true
+  },
+
+  "estimator_params": {
+    "lam": [-1.0, 0.0, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0]
+  },
+
+  "selector_params": {},
+
+  "models":              ["DS-R1", "Qwen3"],
+  "eps":                 [32, 64, 128, 256],
+  "max_iters":           1000000,
+  "collection_interval": 1024,
+
+  "include_deepseek":    true,
+  "include_strategies":  [],
+
+  "out": "experiments/results/my_sub/deepseek_grid.csv",
+  "top": 10
+}

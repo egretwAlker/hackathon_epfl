@@ -1,0 +1,6 @@
+{
+  "_comment": "Bit-identical to deepseek-ai/EPLB (global, groups=1, nodes=1).",
+  "estimate_w":       { "fn": "w_sum" },
+  "build_deployment": { "fn": "build_dseplb" },
+  "select_layers":    { "fn": "select_all" }
+}
