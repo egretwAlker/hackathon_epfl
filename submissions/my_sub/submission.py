@@ -199,6 +199,47 @@ def _init_shadow_unique(L: int, D: int, S: int, E: int) -> np.ndarray:
     return shadow
 
 
+def _init_shadow_pin_hottest(
+    L: int, D: int, S: int, E: int, w: np.ndarray
+) -> np.ndarray:
+    """Initial layout that pins each layer's hottest expert on every device.
+
+    Per layer l:
+      - slot 0 of every device  -> e_hot[l] = argmax_e w[l, e]
+      - slots 1..S-1 on devices -> cyclic round-robin over the other (E-1)
+        experts, in any order.
+
+    Properties:
+      logcnt[e_hot] = D                        (maximum spreading of hot load)
+      logcnt[other] in {1, 2}                  (1 expert gets the spare slot)
+      every expert appears >= 1 time           (since D*(S-1) >= E-1)
+      every device has S DISTINCT experts      (slot 0 = e_hot, plus S-1
+                                                consecutive cycle entries
+                                                from the others)
+
+    Used only by build_incremental's `pin_hottest=True` bootstrap on call 1.
+    """
+    assert D * (S - 1) >= E - 1, (
+        f"pin_hottest requires D*(S-1) >= E-1, got D={D} S={S} E={E}"
+    )
+    shadow = np.empty((L, D, S), dtype=np.int64)
+    all_experts = np.arange(E, dtype=np.int64)
+    for l in range(L):
+        e_hot = int(np.argmax(w[l]))
+        shadow[l, :, 0] = e_hot
+        other = all_experts[all_experts != e_hot]    # (E-1,)
+        # Round-robin (E-1) experts over D*(S-1) slots:
+        # slot_idx -> other[slot_idx mod (E-1)]
+        # device d, slot s (s in 1..S-1)  <- slot_idx = (s-1)*D + d
+        # using device-major order so consecutive `other` entries land on
+        # different devices, helping the cyclic spread of duplicates.
+        for s in range(1, S):
+            for d in range(D):
+                slot_idx = (s - 1) * D + d
+                shadow[l, d, s] = other[slot_idx % (E - 1)]
+    return shadow
+
+
 def _is_unique_per_device(layer: np.ndarray) -> bool:
     """True iff no expert appears twice on the same device in any layer.
     Accepts (L, D, S) or a single (D, S) layer. O(L*D*S)."""
@@ -414,6 +455,11 @@ def build_incremental(
     use_dseplb_init: bool = False,
     max_cold_tries: Optional[int] = None,
     unique_per_device: bool = False,
+    cov_quantile: float = 1.0,
+    cov_source: str = "ema",
+    pin_hottest: bool = False,
+    fuse_phases: bool = False,
+    strict_b_prune: bool = False,
 ) -> np.ndarray:
     """Local-search builder. Hill-climbs from `current` toward lower PAR.
 
@@ -452,6 +498,44 @@ def build_incremental(
     user can sweep over. The min_par_gain_* params remain as a FLOOR — the
     effective threshold is `max(min_par_gain_X, break_even_X)`.
 
+    fuse_phases: when True, replace the strict-priority "try B then fall back
+    to A" inner loop with a single fused enumeration. Each step builds the
+    full candidate set from both phases (B reassigns + A swaps) for the
+    current d_hot, scores each by net profit
+        profit(move) = (cur_par - new_par) - n_transmits * per_transmit_cost
+    and applies the global argmax (if profit > 0). per_transmit_cost is:
+        score_aware=True:  _TRANSMIT_COST_PER_SLOT / compute_value
+        score_aware=False: max(min_par_gain_B, min_par_gain_A / 2)
+    This costs more work per step (no first-acceptable short-circuit on phase
+    B, and phase A is evaluated alongside even when a phase-B move would also
+    pass) but lets the step pick a phase-A swap over a worse phase-B reassign
+    when the swap's larger par-drop outweighs its extra transmit. Same filters
+    (unique_per_device, cov_quantile) apply.
+
+    strict_b_prune: the d_cold early-break uses
+        max_possible_gain = (load[d_hot] - load[d_cold]) / (2 * mean_load)
+    as an upper bound on PAR drop. That bound is tight for phase A (pure
+    swap, only d_hot/d_cold loads change), but unsound for phase B — a B
+    move dilutes amrt[e_rep] and concentrates amrt[e_rem] globally, so other
+    devices' loads (including d_hot's) can move by more than gap/2. The
+    default (False) keeps the heuristic prune — fast, but can skip valid
+    B moves when cnt[e_rep] is small and d_hot holds multiple copies of
+    e_rep. With strict_b_prune=True the phase-B prune (and the fused-mode
+    prune, which charges only one transmit) is disabled, so every d_cold
+    in sorted_cold is enumerated; phase A's prune (non-fused) is left in
+    place because it is correct.
+
+    cov_source: when cov_quantile < 1.0, picks where the covariance matrix
+    used by the filter comes from:
+       "ema"    (default): bias-corrected EMA covariance carried across all
+                           calls (requires EmaConfig.track_corr=True). Smooth
+                           across windows; needs warm-up.
+       "window": sample covariance computed directly from the T-iter hotness
+                 window of this call. No cross-call memory, no warm-up; reflects
+                 only the most recent window. Requires the framework to stash
+                 `stats["hotness"]` (rebalance() does this unconditionally).
+                 Does not need track_corr=True.
+
     The framework eagerly initializes `current` (= PlacementMemory.shadow)
     on call 1 according to Strategy.initial_layout. If `current` arrives None
     anyway (defensive: some non-standard call path), we fall back to the
@@ -473,17 +557,24 @@ def build_incremental(
     # round_robin default. Equivalent to setting Strategy.initial_layout to
     # "dseplb" but kept at the builder layer (so it's controllable per
     # build_incremental config without changing the strategy).
-    if use_dseplb_init:
+    # Bootstrap precedence on call 1 (when `current` matches the simulator's
+    # round-robin initial table):
+    #   pin_hottest > use_dseplb_init > leave alone
+    # `pin_hottest` takes precedence because it's a more specific request
+    # (pin the hottest on every device, then fill the rest cyclically).
+    if pin_hottest:
+        round_robin = _init_shadow(L, D, S, w.shape[1])
+        if np.array_equal(current, round_robin):
+            current = _init_shadow_pin_hottest(L, D, S, w.shape[1], w)
+    elif use_dseplb_init:
         round_robin = _init_shadow(L, D, S, w.shape[1])
         if np.array_equal(current, round_robin):
             current = build_dseplb(w, int(n_device), int(n_red_expert))
 
-    # Enforce no-expert-twice-on-one-device. The simulator's initial table
-    # has duplicates (slot S-1 duplicates slot S-2), so on call 1 we replace
-    # `current` with the unique cyclic layout. From then on, the move filters
-    # below preserve the invariant. Overrides use_dseplb_init when both set.
-    if unique_per_device and not _is_unique_per_device(current):
-        current = _init_shadow_unique(L, D, S, w.shape[1])
+    # `unique_per_device` (when True): no bootstrap — keep whatever `current`
+    # we got (round-robin / DS-EPLB / etc.). Only the move filters below skip
+    # candidates that would *create* a new same-expert-twice-on-one-device.
+    # Existing duplicates in `current` persist; we just stop adding more.
 
     # Effective acceptance thresholds for the inner loop.
     if score_aware:
@@ -496,11 +587,63 @@ def build_incremental(
         break_even_A = 2.0 * _TRANSMIT_COST_PER_SLOT / max(compute_value, 1e-30)
         thresh_B = max(float(min_par_gain_B), break_even_B)
         thresh_A = max(float(min_par_gain_A), break_even_A)
+        # Fused-mode per-transmit cost: charges thresh_B for one transmit,
+        # thresh_A == 2 * thresh_B for the swap (matches the legacy thresholds
+        # whenever min_par_gain_A <= 2 * break_even_B, which holds for the
+        # typical case min_par_gain_A == 0).
+        per_tx_cost = max(float(min_par_gain_B), break_even_B)
     else:
         thresh_B = float(min_par_gain_B)
         thresh_A = float(min_par_gain_A)
+        # Pick the tighter per-transmit cost so fused phase-A acceptance is
+        # at least as strict as the legacy thresh_A.
+        per_tx_cost = max(float(min_par_gain_B), float(min_par_gain_A) / 2.0)
     E = w.shape[1]
     out = np.array(current, dtype=np.int64, copy=True)
+
+    # Per-layer covariance-threshold filter setup. When cov_quantile < 1.0
+    # we need the layer's covariance matrix from stats (requires the active
+    # EmaConfig to have track_corr=True; the framework computes both cov and
+    # corr). For each layer we precompute the |cov| threshold at the requested
+    # quantile of off-diagonal values, and the inner-loop move filters reject
+    # any move that would land an expert adjacent to another DIFFERENT expert
+    # whose |cov| exceeds the threshold.
+    cov_arr = None
+    cov_thresh_per_layer: Optional[np.ndarray] = None
+    if cov_quantile < 1.0:
+        if cov_source == "ema":
+            if stats is not None and "cov" in stats:
+                cov_arr = stats["cov"]                      # (L, E, E)
+        elif cov_source == "window":
+            hotness = stats.get("hotness") if stats is not None else None
+            if hotness is None:
+                raise ValueError(
+                    "cov_source='window' requires stats['hotness']; "
+                    "rebalance() should stash it."
+                )
+            x = np.asarray(hotness, dtype=np.float64)        # (T, L, E)
+            T_w = x.shape[0]
+            # Sample covariance per layer, per-iter scale to match the EMA
+            # path's stats['cov']. Denominator T-1 (unbiased); thresholding
+            # is via quantile so the absolute scale doesn't affect filter
+            # decisions, but matching scale keeps the two sources comparable.
+            mean_iter = x.mean(axis=0)                       # (L, E)
+            Xc = (x - mean_iter[None, :, :]).transpose(1, 0, 2)  # (L, T, E)
+            denom = max(T_w - 1, 1)
+            cov_arr = (Xc.transpose(0, 2, 1) @ Xc) / denom   # (L, E, E)
+        else:
+            raise ValueError(
+                f"cov_source must be 'ema' or 'window', got {cov_source!r}"
+            )
+
+        if cov_arr is not None and cov_arr.shape[0] == L:
+            cov_thresh_per_layer = np.empty(L, dtype=np.float64)
+            off_mask = ~np.eye(E, dtype=bool)
+            for l_idx in range(L):
+                abs_off = np.abs(cov_arr[l_idx][off_mask])
+                cov_thresh_per_layer[l_idx] = float(
+                    np.quantile(abs_off, cov_quantile)
+                )
 
     for l in range(L):
         layer = out[l]  # view; in-place edits below mutate `out`
@@ -515,6 +658,13 @@ def build_incremental(
         mean_load = load.mean()
         w_l = w[l]                                         # local alias
 
+        # Per-layer covariance matrix + threshold (if filter enabled).
+        cov_l = None
+        cov_thresh_l = None
+        if cov_thresh_per_layer is not None and cov_arr is not None:
+            cov_l = cov_arr[l]
+            cov_thresh_l = float(cov_thresh_per_layer[l])
+
         for _step in range(int(max_moves_per_layer)):
             cur_max = load.max()
             cur_par = cur_max / mean_load
@@ -528,9 +678,135 @@ def build_incremental(
             if sorted_cold.size == 0:
                 break
 
-            applied = False
             slots_hot = layer[d_hot]
             a_hot_slots = amrt[slots_hot]
+
+            if fuse_phases:
+                # Fused enumeration: gather every candidate (phase B reassign
+                # + phase A swap) for the current d_hot, score by net profit,
+                # apply the global argmax. No first-acceptable short-circuit
+                # within a step; the outer d_cold loop still early-breaks
+                # using max_possible_gain since colder devices can't beat
+                # the same bound.
+                best_profit = 0.0
+                best = None  # ("B", d_cold, sh, sc, e_rep, e_rem,
+                             #  new_a_rep, new_a_rem, new_load)
+                             # or ("A", d_cold, sh, sc, e_a, e_b, new_load)
+                for d_cold_i in sorted_cold:
+                    d_cold = int(d_cold_i)
+                    if not strict_b_prune:
+                        max_possible_gain = (load[d_hot] - load[d_cold]) / (2.0 * mean_load)
+                        # Cheapest move (phase B) requires par_drop > per_tx_cost
+                        # to beat current best; if not even possible, stop. Bound
+                        # is only tight for phase A; strict_b_prune disables it.
+                        if max_possible_gain - per_tx_cost <= best_profit:
+                            break
+
+                    slots_cold = layer[d_cold]
+                    a_cold_slots = amrt[slots_cold]
+                    cnt_cold_slots = cnt[slots_cold]
+
+                    # --- Phase B candidates (1 transmit each) ---
+                    for sh in range(S):
+                        e_rep_cand = int(slots_hot[sh])
+                        for sc in range(S):
+                            if cnt_cold_slots[sc] <= 1:
+                                continue
+                            e_rem_cand = int(slots_cold[sc])
+                            if e_rep_cand == e_rem_cand:
+                                continue
+                            if unique_per_device:
+                                dup = False
+                                for t in range(S):
+                                    if t != sc and int(slots_cold[t]) == e_rep_cand:
+                                        dup = True
+                                        break
+                                if dup:
+                                    continue
+                            if cov_thresh_l is not None and cov_l is not None:
+                                too_covariate = False
+                                for t in range(S):
+                                    if t == sc:
+                                        continue
+                                    e_other = int(slots_cold[t])
+                                    if e_other == e_rep_cand:
+                                        continue
+                                    if abs(float(cov_l[e_rep_cand, e_other])) > cov_thresh_l:
+                                        too_covariate = True
+                                        break
+                                if too_covariate:
+                                    continue
+
+                            new_a_rep = w_l[e_rep_cand] / (cnt[e_rep_cand] + 1)
+                            new_a_rem = w_l[e_rem_cand] / (cnt[e_rem_cand] - 1)
+                            delta_rep = new_a_rep - amrt[e_rep_cand]
+                            delta_rem = new_a_rem - amrt[e_rem_cand]
+                            rep_count = (layer == e_rep_cand).sum(axis=1)
+                            rem_count = (layer == e_rem_cand).sum(axis=1)
+                            new_load_B = load + rep_count * delta_rep + rem_count * delta_rem
+                            new_load_B[d_cold] += new_a_rep - new_a_rem
+                            par_drop = cur_par - new_load_B.max() / mean_load
+                            profit = par_drop - per_tx_cost
+                            if profit > best_profit:
+                                best_profit = profit
+                                best = ("B", d_cold, sh, sc,
+                                        e_rep_cand, e_rem_cand,
+                                        new_a_rep, new_a_rem, new_load_B)
+
+                    # --- Phase A candidate (1 swap = 2 transmits) ---
+                    sh_A = int(a_hot_slots.argmax())
+                    sc_A = int(a_cold_slots.argmin())
+                    e_a = int(slots_hot[sh_A])
+                    e_b = int(slots_cold[sc_A])
+                    if e_a != e_b:
+                        ok = True
+                        if unique_per_device:
+                            for t in range(S):
+                                if t != sh_A and int(slots_hot[t]) == e_b:
+                                    ok = False; break
+                                if t != sc_A and int(slots_cold[t]) == e_a:
+                                    ok = False; break
+                        if ok and cov_thresh_l is not None and cov_l is not None:
+                            for t in range(S):
+                                if t != sh_A:
+                                    e_other = int(slots_hot[t])
+                                    if e_other != e_b and abs(float(cov_l[e_b, e_other])) > cov_thresh_l:
+                                        ok = False; break
+                                if not ok:
+                                    break
+                                if t != sc_A:
+                                    e_other = int(slots_cold[t])
+                                    if e_other != e_a and abs(float(cov_l[e_a, e_other])) > cov_thresh_l:
+                                        ok = False; break
+                        if ok:
+                            new_load_A = load.copy()
+                            new_load_A[d_hot] = load[d_hot] - amrt[e_a] + amrt[e_b]
+                            new_load_A[d_cold] = load[d_cold] - amrt[e_b] + amrt[e_a]
+                            par_drop = cur_par - new_load_A.max() / mean_load
+                            profit = par_drop - 2.0 * per_tx_cost
+                            if profit > best_profit:
+                                best_profit = profit
+                                best = ("A", d_cold, sh_A, sc_A,
+                                        e_a, e_b, new_load_A)
+
+                if best is None:
+                    break  # no profitable phase-A or phase-B move
+                if best[0] == "B":
+                    _, d_cold, sh, sc, e_rep, e_rem, new_a_rep, new_a_rem, new_load_B = best
+                    layer[d_cold, sc] = e_rep
+                    cnt[e_rep] += 1
+                    cnt[e_rem] -= 1
+                    amrt[e_rep] = new_a_rep
+                    amrt[e_rem] = new_a_rem
+                    load = new_load_B
+                else:
+                    _, d_cold, sh, sc, e_a, e_b, new_load_A = best
+                    layer[d_hot, sh] = e_b
+                    layer[d_cold, sc] = e_a
+                    load = new_load_A
+                continue
+
+            applied = False
 
             # ---- PHASE B (1 transmit): walk d_cold from coldest to warmest ----
             for d_cold_i in sorted_cold:
@@ -538,9 +814,13 @@ def build_incremental(
                 # Early termination: if the load gap is too small even an ideal
                 # half-share split can't clear thresh_B. Subsequent d_cold are
                 # closer to d_hot, so they can't either -> break the d_cold walk.
-                max_possible_gain = (load[d_hot] - load[d_cold]) / (2.0 * mean_load)
-                if max_possible_gain <= thresh_B:
-                    break
+                # The (load[d_hot]-load[d_cold])/(2*mean_load) upper bound is
+                # tight for phase A but not phase B (amrt dilution can move
+                # other devices' loads), so strict_b_prune disables it.
+                if not strict_b_prune:
+                    max_possible_gain = (load[d_hot] - load[d_cold]) / (2.0 * mean_load)
+                    if max_possible_gain <= thresh_B:
+                        break
 
                 slots_cold = layer[d_cold]
                 a_cold_slots = amrt[slots_cold]
@@ -549,24 +829,40 @@ def build_incremental(
                 pairs = []
                 for sh in range(S):
                     e_rep_cand = int(slots_hot[sh])
-                    # Uniqueness filter: skip if e_rep is already on d_cold
-                    # (at any slot other than the one we'd overwrite).
-                    if unique_per_device:
-                        already_on_cold = False
-                        for t in range(S):
-                            if int(slots_cold[t]) == e_rep_cand:
-                                already_on_cold = True
-                                break
-                        if already_on_cold:
-                            # Replacing one specific slot wouldn't remove the
-                            # OTHER occurrence, so this sh is unusable.
-                            continue
                     for sc in range(S):
                         if cnt_cold_slots[sc] <= 1:
                             continue
                         e_rem_cand = int(slots_cold[sc])
                         if e_rep_cand == e_rem_cand:
                             continue
+                        if unique_per_device:
+                            # After overwriting slot sc, would e_rep also live
+                            # at some OTHER slot on d_cold? If yes, that move
+                            # creates a duplicate on d_cold -> skip.
+                            duplicate = False
+                            for t in range(S):
+                                if t != sc and int(slots_cold[t]) == e_rep_cand:
+                                    duplicate = True
+                                    break
+                            if duplicate:
+                                continue
+                        if cov_thresh_l is not None and cov_l is not None:
+                            # Filter pairs of DIFFERENT experts only — the
+                            # same-expert case is handled by unique_per_device
+                            # (and the quantile threshold itself was computed
+                            # over off-diagonal entries).
+                            too_covariate = False
+                            for t in range(S):
+                                if t == sc:
+                                    continue
+                                e_other = int(slots_cold[t])
+                                if e_other == e_rep_cand:
+                                    continue
+                                if abs(float(cov_l[e_rep_cand, e_other])) > cov_thresh_l:
+                                    too_covariate = True
+                                    break
+                            if too_covariate:
+                                continue
                         pairs.append(
                             (float(a_hot_slots[sh] - a_cold_slots[sc]),
                              sh, sc, e_rep_cand, e_rem_cand)
@@ -629,6 +925,22 @@ def build_incremental(
                         if t != sc and int(slots_cold[t]) == e_a:
                             dup = True; break
                     if dup:
+                        continue
+                # Covariance-quantile filter for the swap.
+                # DIFFERENT-expert pairs only — same-expert pairs are
+                # already rejected above by unique_per_device.
+                if cov_thresh_l is not None and cov_l is not None:
+                    too_covariate = False
+                    for t in range(S):
+                        if t != sh:
+                            e_other = int(slots_hot[t])
+                            if e_other != e_b and abs(float(cov_l[e_b, e_other])) > cov_thresh_l:
+                                too_covariate = True; break
+                        if t != sc:
+                            e_other = int(slots_cold[t])
+                            if e_other != e_a and abs(float(cov_l[e_a, e_other])) > cov_thresh_l:
+                                too_covariate = True; break
+                    if too_covariate:
                         continue
 
                 new_load = load.copy()
@@ -810,6 +1122,13 @@ def rebalance(hotness, n_device, n_red_expert):
 
     # Stage A: derive w (and stats) from raw window + EMA state + last layout.
     w, stats = s.estimate_w(ctx)
+
+    # Make the raw hotness window available to Stage B so builders can derive
+    # within-window quantities (e.g. build_incremental's cov_source='window')
+    # without changing Stage A.
+    if stats is None:
+        stats = {}
+    stats.setdefault("hotness", hotness)
 
     # Stage B: produce a proposed deployment table.
     shadow = pm.shadow

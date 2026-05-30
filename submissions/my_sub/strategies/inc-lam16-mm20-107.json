@@ -1,0 +1,32 @@
+{
+  "_comment": "Top hit from sweeps/incremental-grid.json on DS-R1 EP128 LmSys (local score 112.16). w_ema with lam=16 (moderate defensive variance weighting) + build_incremental with max_moves=10 (already saturated; 20/40 give identical scores) and both PAR-gain thresholds at 0 (never override the local-search gain; matches the swept configuration). Selector keeps only layers that actually changed.",
+
+  "ema": {
+    "beta1": 0.999,
+    "beta2": 0.9999
+  },
+
+  "estimate_w": {
+    "fn": "w_ema",
+    "params": { "lam": 0.0 }
+  },
+
+  "build_deployment": {
+    "fn": "build_incremental",
+    "params": {
+      "max_moves_per_layer": 20,
+      "min_par_gain_B":      0.0,
+      "min_par_gain_A":      0.0,
+      "score_aware":         true,
+      "assumed_cycle_iters": 1024,
+      "assumed_total_iters": 10000,
+      "use_dseplb_init":     true,
+      "max_cold_tries":      20
+    }
+  },
+
+  "select_layers": {
+    "fn": "select_top_k_par_gain",
+    "params": { "k": null, "threshold": 0.0 }
+  }
+}

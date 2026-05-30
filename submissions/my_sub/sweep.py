@@ -247,11 +247,23 @@ def main() -> None:
                     {k: (f"{v:.6f}" if isinstance(v, float) else v) for k, v in row.items()}
                 )
                 f.flush()
+                corr_tail = ""
+                if "corr_summary" in cand:
+                    cs = cand["corr_summary"]
+                    corr_tail = (
+                        f"   |corr|p50={cs['corr_p50_abs']:.3f}"
+                        f",p95={cs['corr_p95_abs']:.3f}"
+                        f",max={cs['corr_max_abs']:.3f}"
+                        f"   |cov|p50={cs['cov_p50_abs']:>7.1f}"
+                        f",p95={cs['cov_p95_abs']:>7.1f}"
+                        f",max={cs['cov_max_abs']:>7.1f}"
+                    )
                 print(
                     f"   score={sc['score']:7.2f}   "
                     f"PAR={cand['mean_par']:.4f}  "
                     f"transmit={cand['transmit_amount']:>7d}  "
-                    f"wall={cand['rebalance_wall']:5.2f}s",
+                    f"wall={cand['rebalance_wall']:5.2f}s"
+                    f"{corr_tail}",
                     flush=True,
                 )
 

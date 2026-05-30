@@ -25,7 +25,7 @@
       "unique_per_device":   true,
       "pin_hottest":         false,
       "fuse_phases":         true,
-      "strict_b_prune":      true
+      "strict_b_prune":      false
     }
   },
 

@@ -100,11 +100,64 @@ def run_reference(hotness, ep, n_layers, n_experts, collection_interval) -> dict
 
 
 def run_strategy(strategy, hotness, ep, n_layers, n_experts, collection_interval) -> dict:
-    """Run a Strategy object against the simulator loop."""
+    """Run a Strategy object against the simulator loop. If the strategy's
+    EmaConfig has track_corr=True, also captures a per-case summary of the
+    final correlation/covariance matrix (off-diagonal stats per layer)."""
     submission.reset_state()
     submission.set_strategy(strategy)
     fn = lambda h: submission.rebalance(h, ep, ep)  # noqa: E731
-    return run_loop(fn, hotness, ep, n_layers, n_experts, collection_interval)
+    result = run_loop(fn, hotness, ep, n_layers, n_experts, collection_interval)
+
+    # Diagnostic: pull final corr/cov matrix from the framework's TraceMemory
+    # for inspection. Only present if the strategy enabled track_corr.
+    key = (n_layers, n_experts, ep, ep)
+    tm = submission._TRACE.get(key)
+    if tm is not None and tm.M is not None and tm.n_corr_iters > 0:
+        result["corr_summary"] = _summarize_corr_cov(tm, strategy.ema)
+    return result
+
+
+def _summarize_corr_cov(tm, cfg) -> dict:
+    """Aggregate off-diagonal correlation and covariance over all layers.
+
+    Returns:
+      corr.{mean_abs, p50_abs, p95_abs, p99_abs, max_abs} in [0, 1]
+      cov.{mean_abs, p50_abs, p95_abs, max_abs}             raw units (token-count^2)
+    Off-diagonal mask excludes the (e, e) self-pairs.
+    """
+    import numpy as _np
+    n_c = tm.n_corr_iters
+    if cfg.bias_correction:
+        m1_hat = tm.m1 / max(1.0 - cfg.beta1 ** tm.n_iters, 1e-30)
+        M_hat  = tm.M  / max(1.0 - cfg.beta_corr ** n_c,    1e-30)
+    else:
+        m1_hat = tm.m1.copy()
+        M_hat  = tm.M.copy()
+
+    cov = M_hat - m1_hat[:, :, None] * m1_hat[:, None, :]
+    diag = _np.diagonal(cov, axis1=1, axis2=2)
+    denom = _np.sqrt(_np.maximum(diag[:, :, None] * diag[:, None, :], 1e-30))
+    corr = _np.clip(cov / denom, -1.0, 1.0)
+
+    L_, E_, _ = corr.shape
+    off_mask = ~_np.eye(E_, dtype=bool)              # (E, E)
+    off_corr = corr[:, off_mask]                     # (L, E*(E-1))
+    off_cov  = cov[:,  off_mask]
+    abs_corr = _np.abs(off_corr).ravel()
+    abs_cov  = _np.abs(off_cov).ravel()
+
+    return {
+        "n_corr_iters":   int(n_c),
+        "corr_mean_abs":  float(abs_corr.mean()),
+        "corr_p50_abs":   float(_np.quantile(abs_corr, 0.50)),
+        "corr_p95_abs":   float(_np.quantile(abs_corr, 0.95)),
+        "corr_p99_abs":   float(_np.quantile(abs_corr, 0.99)),
+        "corr_max_abs":   float(abs_corr.max()),
+        "cov_mean_abs":   float(abs_cov.mean()),
+        "cov_p50_abs":    float(_np.quantile(abs_cov, 0.50)),
+        "cov_p95_abs":    float(_np.quantile(abs_cov, 0.95)),
+        "cov_max_abs":    float(abs_cov.max()),
+    }
 
 
 def score(reference: dict, candidate: dict) -> dict:

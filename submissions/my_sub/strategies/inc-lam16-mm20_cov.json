@@ -14,18 +14,18 @@
   "build_deployment": {
     "fn": "build_incremental",
     "params": {
-      "max_moves_per_layer": 40,
+      "max_moves_per_layer": 20,
       "min_par_gain_B":      0.0,
       "min_par_gain_A":      0.0,
-      "score_aware":         false,
+      "score_aware":         true,
       "assumed_cycle_iters": 1024,
       "assumed_total_iters": 10000,
       "use_dseplb_init":     true,
       "max_cold_tries":      32,
       "unique_per_device":   true,
       "pin_hottest":         false,
-      "fuse_phases":         true,
-      "strict_b_prune":      true
+      "cov_quantile":        0.99,
+      "cov_source":          "window"
     }
   },
 
